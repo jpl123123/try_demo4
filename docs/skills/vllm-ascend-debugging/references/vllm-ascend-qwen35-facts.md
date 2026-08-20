@@ -58,7 +58,7 @@ vllm serve /softwarePlatform/c00879303/Qwen3.5-27B-w8a8-mtp \
 
 ## 4. triattention 参考实现（速查指针）
 
-triattention（`tri_3_5-fix-partial-rope-qwen35-v0.23.0`）是**已通过 vllm-ascend v0.23.0 补丁形式成功实现的参考集成**（物理 compact 路线：调度/压缩触发/驱逐回收/输入修正全链路）。
+triattention（**当前工作区/项目根下的 `tri_3_5-fix-partial-rope-qwen35-v0.23.0/` 目录**，本机即 `/Users/sunao2000/try_4/tri_3_5-fix-partial-rope-qwen35-v0.23.0/`）是**已通过 vllm-ascend v0.23.0 补丁形式成功实现的参考集成**（物理 compact 路线：调度/压缩触发/驱逐回收/输入修正全链路）。
 它是本项目的**参考实现（ground truth）**：做任何新集成迷茫时，先参照它的实现逻辑。
 **其逐模块详解只写在 `triattention-ascend-core-adaptation.md`**（补丁面全景、调度侧触发与回收闭环、
 worker proxy 惰性安装、输入元数据修正 V1+V2、原地 KV 压缩原语、跨进程事件回传、Ascend 打分、

@@ -1,6 +1,6 @@
 # TriAttention → vllm-ascend 核心适配逻辑全解（物理 compact 路线参考实现）
 
-> 本文档从 tri_3_5-fix-partial-rope-qwen35-v0.23.0 源码逐模块核实（2025-08）。
+> 本文档从 `tri_3_5-fix-partial-rope-qwen35-v0.23.0/`（**当前工作区/项目根下**，本机即 `/Users/sunao2000/try_4/tri_3_5-fix-partial-rope-qwen35-v0.23.0/`）源码逐模块核实（2025-08）。
 > **定位**：triattention 是**已通过 vllm-ascend v0.23.0 补丁形式成功实现并验证过的参考集成**
 > （本项目 ground truth）——做任何新的 vllm-ascend 集成工作迷茫时，先参照它的实现逻辑（见
 > SKILL.md「参考实现地位」）。本文件是 triattention 的**唯一逐模块详解**，其它文档只保留指向

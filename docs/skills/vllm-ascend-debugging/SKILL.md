@@ -11,7 +11,7 @@ whenToUse: Whenever the user mentions vllm-ascend, vLLM v1 on Ascend NPU, or any
 
 核心立场：vllm-ascend 源码**一行不改**，所有改动都是运行时 monkeypatch；每个 hook 必须 **fail-soft**（出错只告警、服务继续跑未优化）；**所有关键事实必须能从 vllm-ascend 源码本身验证**，不能靠猜；**没有机器不是不调试的借口——模拟调试是定义好的、可交付的一等流程**。
 
-**参考实现地位（本项目的关键方法论，务必先读）**：triattention（`tri_3_5-fix-partial-rope-qwen35-v0.23.0`）是**已经通过 vllm-ascend v0.23.0 补丁形式成功实现并验证过的完整集成**——调度、压缩触发、KV 驱逐/回收、输入元数据修正、跨进程状态同步全链路跑通。因此：**做任何新的 vllm-ascend 集成工作（KV 压缩、注意力变体、采样、量化、投机解码、新模型支持…）时，一旦迷茫——不知道选哪个缝、不知道某个机制在 vllm v1/ascend 里怎么表达、debug 找不到方向——第一动作就是参照 triattention 的实现逻辑**：它怎么 patch scheduler/worker/runner、怎么把算法状态翻译成 vllm v1 的数据流、怎么同步与回传，照它的模式走，再按本技能其余章节细化。**triattention 的逐模块详解只写在 `references/triattention-ascend-core-adaptation.md` 一个文件里**；其它文档（含 qwen35-facts）只保留指向它的引用，不再展开。
+**参考实现地位（本项目的关键方法论，务必先读）**：triattention 是**已经通过 vllm-ascend v0.23.0 补丁形式成功实现并验证过的完整集成**，代码位于**当前工作区/项目根下的 `tri_3_5-fix-partial-rope-qwen35-v0.23.0/` 目录**（本机即 `/Users/sunao2000/try_4/tri_3_5-fix-partial-rope-qwen35-v0.23.0/`；vllm-ascend 侧核心在 `triattention/vllm/runtime/`，入口 `triattention/vllm/plugin.py` + `triattention/vllm/runtime/integration_monkeypatch.py`，transformers 层在 `triattention/integration/`，测试在 `triattention/tests/`）——调度、压缩触发、KV 驱逐/回收、输入元数据修正、跨进程状态同步全链路跑通。因此：**做任何新的 vllm-ascend 集成工作（KV 压缩、注意力变体、采样、量化、投机解码、新模型支持…）时，一旦迷茫——不知道选哪个缝、不知道某个机制在 vllm v1/ascend 里怎么表达、debug 找不到方向——第一动作就是参照 triattention 的实现逻辑**：它怎么 patch scheduler/worker/runner、怎么把算法状态翻译成 vllm v1 的数据流、怎么同步与回传，照它的模式走，再按本技能其余章节细化。**triattention 的逐模块详解只写在 `references/triattention-ascend-core-adaptation.md` 一个文件里**；其它文档（含 qwen35-facts）只保留指向它的引用，不再展开。
 
 ---
 

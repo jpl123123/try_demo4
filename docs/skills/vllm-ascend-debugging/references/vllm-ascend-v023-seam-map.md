@@ -161,4 +161,4 @@ marker（每个 (req, layer)）：
 | 逐层/逐请求 | 支持（每层独立视图） | 受限（共享槽映射 → 每请求统一） |
 | 资源回收 | 不回收（省计算/带宽） | 可回收（要 scheduler/worker 同步 + 事件回传） |
 | 复杂度 | 低-中（仅 worker 侧） | 高（engine-core 补丁面，见 qwen35-facts §4） |
-| 参考实现 | kvpress-ascend / SqueezeAttention-ascend | triattention（tri_3_5-...-v0.23.0） |
+| 参考实现 | kvpress-ascend / SqueezeAttention-ascend | triattention（项目根下 `tri_3_5-fix-partial-rope-qwen35-v0.23.0/`） |
