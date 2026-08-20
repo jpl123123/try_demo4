@@ -1,7 +1,10 @@
 # TriAttention → vllm-ascend 核心适配逻辑全解（物理 compact 路线参考实现）
 
 > 本文档从 tri_3_5-fix-partial-rope-qwen35-v0.23.0 源码逐模块核实（2025-08）。
-> 它是"**尾部块物理搬移 + 资源回收**"路线的**最完整参考实现**；与视图改写路线
+> **定位**：triattention 是**已通过 vllm-ascend v0.23.0 补丁形式成功实现并验证过的参考集成**
+> （本项目 ground truth）——做任何新的 vllm-ascend 集成工作迷茫时，先参照它的实现逻辑（见
+> SKILL.md「参考实现地位」）。本文件是 triattention 的**唯一逐模块详解**，其它文档只保留指向
+> 它的引用。它也是"**尾部块物理搬移 + 资源回收**"路线的**最完整参考实现**；与视图改写路线
 > （kvpress-ascend / SqueezeAttention-ascend）对照使用，见 seam-map §6.5 决策表。
 > 模块地图：`triattention/vllm/runtime/`（scheduler/worker/runner/kv_compaction/
 > input_patch_*/runner_output_bridge/kv_allocation_sync/worker_reclaim_sync/...）。

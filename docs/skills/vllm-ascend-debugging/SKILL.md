@@ -11,6 +11,8 @@ whenToUse: Whenever the user mentions vllm-ascend, vLLM v1 on Ascend NPU, or any
 
 核心立场：vllm-ascend 源码**一行不改**，所有改动都是运行时 monkeypatch；每个 hook 必须 **fail-soft**（出错只告警、服务继续跑未优化）；**所有关键事实必须能从 vllm-ascend 源码本身验证**，不能靠猜；**没有机器不是不调试的借口——模拟调试是定义好的、可交付的一等流程**。
 
+**参考实现地位（本项目的关键方法论，务必先读）**：triattention（`tri_3_5-fix-partial-rope-qwen35-v0.23.0`）是**已经通过 vllm-ascend v0.23.0 补丁形式成功实现并验证过的完整集成**——调度、压缩触发、KV 驱逐/回收、输入元数据修正、跨进程状态同步全链路跑通。因此：**做任何新的 vllm-ascend 集成工作（KV 压缩、注意力变体、采样、量化、投机解码、新模型支持…）时，一旦迷茫——不知道选哪个缝、不知道某个机制在 vllm v1/ascend 里怎么表达、debug 找不到方向——第一动作就是参照 triattention 的实现逻辑**：它怎么 patch scheduler/worker/runner、怎么把算法状态翻译成 vllm v1 的数据流、怎么同步与回传，照它的模式走，再按本技能其余章节细化。**triattention 的逐模块详解只写在 `references/triattention-ascend-core-adaptation.md` 一个文件里**；其它文档（含 qwen35-facts）只保留指向它的引用，不再展开。
+
 ---
 
 ## 0. 方法论总纲：调度框架先行（先搭骨架，再深入 coding，debug 持续更新）
@@ -33,6 +35,9 @@ whenToUse: Whenever the user mentions vllm-ascend, vLLM v1 on Ascend NPU, or any
 
 ```
 阅读源码（版本锚定 → 插件骨架 → 优化对象机制 → vllm-ascend 数据位置）
+  ↓
+[0] 迷茫时先读参考实现：triattention（已成功集成）的逐模块详解
+      （references/triattention-ascend-core-adaptation.md）——照它的模式选缝/表达/同步
   ↓
 [1] 搭调度框架：进程 → 每步流水线（带行号）→ 状态时序 → 数据流      ← 先立骨架
   ↓
@@ -482,6 +487,6 @@ execute_model_pre（快照 before 状态：num_computed/num_scheduled/num_prompt
 - `references/runtime-scheduling-framework.md`（**运行调度框架**：进程 → 每步流水线(带行号) → 状态时序 → 钩子叠加 → 数据流；先搭框架、debug 持续更新——对任何优化类型通用）
 - `references/vllm-ascend-v023-seam-map.md`（v0.23.0 已验证 seam/API 表 + KV 压缩案例公式；新版本/新优化类型请按同样格式扩充）
 - `references/bug-catalog.md`（**bug 目录**：A/B/C 三组实战全清单（二期 C1-C12）——症状/根因/修复/类目/发现途径/回归测试；REGRESS 纪律：每个修复必须能在此找到一行记录 + 一个回归测试）
-- `references/vllm-ascend-qwen35-facts.md`（**Qwen3.5/qwen3_next 架构事实**：Qwen3NextAttention、GDN 混合层、residual 解码层、MTP 独立 group、用户 262144 长上下文启动配置、triattention 物理 compact 补丁面）
+- `references/vllm-ascend-qwen35-facts.md`（**Qwen3.5/qwen3_next 架构事实**：Qwen3NextAttention、GDN 混合层、residual 解码层、MTP 独立 group、用户 262144 长上下文启动配置、triattention 参考实现指针）
 - `references/runtime-scheduling-framework.md` §7-§9（**两条技术路线决策表 / 多优化包共存裁决 / 更新纪律补充**）
 - `references/triattention-ascend-core-adaptation.md`（**triattention → vllm-ascend 核心适配逻辑全解**：物理 compact 路线的完整参考实现——调度侧触发/回收闭环、worker proxy、输入元数据修正、KV 原地压缩原语、跨进程事件、Ascend 打分与精度保护、可复用工程模式）

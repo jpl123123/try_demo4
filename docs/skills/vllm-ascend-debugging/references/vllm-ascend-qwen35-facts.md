@@ -56,25 +56,10 @@ vllm serve /softwarePlatform/c00879303/Qwen3.5-27B-w8a8-mtp \
 | 视图行 buffer | 每层独立持久 buffer，增量同步 | 见 seam-map §6.4 同步协议 |
 | 层模块解析 | layer_name `model.layers.N.self_attn.attn` → 从 runner.model 按路径走 | `layers` 是 ModuleList：路径段 `N` 用 `module[int(N)]`，不能 `getattr` |
 
-## 4. 与 triattention 参考实现的对应关系（物理路径）
+## 4. triattention 参考实现（速查指针）
 
-triattention（tri_3_5-fix-partial-rope-qwen35-v0.23.0）走**物理 compact + 回收**路线，其已验证的 vllm V1 补丁面（可复用为新项目的 seam 清单）：
-
-| triattention 补丁 | 对应机制 |
-|---|---|
-| `Scheduler.__init__/schedule/update_from_output` 包装 | 调度侧压缩信号、effective len、事件回传 |
-| `KVCacheManager.allocate_slots`（`delay_cache_blocks=True` + 临时改写 `request.num_computed_tokens`） | 压缩后避免继续提交 prefix-cache hash |
-| `EngineCore.step_with_batch_queue` | async 边界屏障（压缩批不越过队列） |
-| `NPUWorker.init_device/execute_model` + runner proxy 惰性安装 | worker 侧入口 |
-| `set_ascend_forward_context` / model_runner 版 | 图模式守卫 |
-| `ModelRunnerOutput.kv_connector_output.kv_cache_events`（declared dataclass 字段） | 跨进程压缩事件回传（普通 setattr 会被 cloudpickle 丢） |
-| 输入元数据修正（seq_lens/slot mapping/block table 视图） | 与 view 模式同源的“读视图修正”，但配合物理搬移 |
-| `TRIATTN_RUNTIME_*` env 全家桶 + logging master switch | 观测性模板 |
-
-物理路线与视图路线共用 90% 的“元数据读视图修正”知识，差异只在写路径与调度器同步；新任务先按 §2.3 决策轴选路线，再取对应 seam 表。
-
-> **完整实现参考**：本表只是速查；triattention 核心适配逻辑的逐模块详解
-> （信号/触发守卫/effective len 跟踪/事件回传三优先级/allocate_slots 补丁/
-> async 边界屏障/内存检查放宽/proxy 惰性安装/图模式守卫/V1+V2 输入修正/
-> KV 原地 compact 三种放置语义/物理回收与分配同步/Ascend 打分后端/fast-recency
-> 精度保护/观测性模板）见 `triattention-ascend-core-adaptation.md`。
+triattention（`tri_3_5-fix-partial-rope-qwen35-v0.23.0`）是**已通过 vllm-ascend v0.23.0 补丁形式成功实现的参考集成**（物理 compact 路线：调度/压缩触发/驱逐回收/输入修正全链路）。
+它是本项目的**参考实现（ground truth）**：做任何新集成迷茫时，先参照它的实现逻辑。
+**其逐模块详解只写在 `triattention-ascend-core-adaptation.md`**（补丁面全景、调度侧触发与回收闭环、
+worker proxy 惰性安装、输入元数据修正 V1+V2、原地 KV 压缩原语、跨进程事件回传、Ascend 打分、
+观测性模板、可复用工程模式），本文件不再展开。
