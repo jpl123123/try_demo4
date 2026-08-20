@@ -165,16 +165,38 @@ vLLM v1 把调度与执行拆开：
 
 **原则**：任务有多个优化方法/多个 monkeypatch 包时，**不要做成二选一**——从
 **整体 vllm-ascend 逻辑链**的角度给每个机制分一段职责，让它们在同一条流水线里
-同时工作。逻辑链各段天然正交，职责不重叠就不会互相覆盖：
+同时工作。逻辑链各段天然正交，职责不重叠就不会互相覆盖。
+
+**压缩公式（所有 KV 压缩机制的共同对象，先写下来再排机制）**：
 
 ```
-层/请求维度预算（每层保留多少）→ token 维度选择（保留哪些）→ 视图/布局表达（怎么读）
+memory(KV) = 2 × N_tokens × N_layer × N_head × d_head × sizeof(dtype)
+             K+V     序列长度   层数     KV头数   每头维度     位宽
+```
+
+任何压缩机制 = 在**一个或多个维度**上削减因子。多机制同时兼容 = **在不同维度上
+各部署一个机制**（跨维度天然正交，互不干扰）：
+
+| 维度 | 削减手段 | 案例 |
+|---|---|---|
+| `N_tokens` 序列维度 | token/块选择、窗口、驱逐 | kvpress 块级打分、StreamingLLM 窗口、ToVa、TriAttention 打分 |
+| `N_layer` 层维度 | 逐层预算、层重要性、层跳过 | SqueezeAttention KMeans 聚类、TriAttention score_max_layers |
+| `N_head` 头维度 | 头选择、共享头、GQA/MQA 融合 | head pruning、GQA 共享 |
+| `d_head` 维内维度（hidden_dim/head_dim） | 低秩分解、维内剪枝 | ThinK（沿 head_dim 剪枝）、低秩 KV |
+| `dtype` 位宽 | 量化 | KIVI 2bit、FP8 KV |
+
+同一维度内再按执行链细分职责（谁定"多少"、谁定"哪些"、谁写"视图"）：
+
+```
+维度预算（每层/每头保留多少）→ 元素选择（保留哪些 token/head/dim）→ 视图/布局表达（怎么读）
 → 触发/调度（何时执行）→ 采样/后处理
 ```
 
-**案例（kvpress + squeeze 组合）**：squeeze 负责层维度（cos-sim + KMeans → 每层
-预算），kvpress 负责 token 维度 + 视图（打分压缩，`n_kept = 预算`）——2D 预算 ×
-块级打分同时生效；S4 视图只允许**一个唯一写者**。
+**案例（kvpress + squeeze 组合）**：squeeze 压 `N_layer×N_tokens`（层维度：cos-sim +
+KMeans → 每层预算；token 维度：每层窗口），kvpress 压 `N_tokens`（块级打分选择）——
+同一 N_tokens 维度内再分工：squeeze 决定**每层保留多少**，kvpress 决定**保留哪些**；
+`N_head`/`d_head`/`dtype` 维度留给后续机制（头剪枝、ThinK、量化）直接叠加。
+S4 视图只允许**一个唯一写者**。
 
 **编排五步（直接套用）**：
 1. **画逻辑链**：把每个方法放到链条的一段上，标注其输入/输出/写什么；
