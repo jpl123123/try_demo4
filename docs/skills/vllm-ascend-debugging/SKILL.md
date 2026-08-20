@@ -185,6 +185,34 @@ memory(KV) = 2 × N_tokens × N_layer × N_head × d_head × sizeof(dtype)
 | `d_head` 维内维度（hidden_dim/head_dim） | 低秩分解、维内剪枝 | ThinK（沿 head_dim 剪枝）、低秩 KV |
 | `dtype` 位宽 | 量化 | KIVI 2bit、FP8 KV |
 
+**驱逐视角（这些"压缩"本质都是驱逐）**：上面每个维度的削减，本质都是在该维度上
+**驱逐**一部分元素（token / 层 / 头 / 维内分量 / 位宽）——"压缩"是驱逐的静态表达，
+"驱逐"是它的**物理闭环**：选择（谁被逐）→ 物理搬移/清空（KV 重排）→ 资源回收
+（块/内存真正释放）→ 状态同步（scheduler/worker 有效视图 + 事件回传 + 计数修正）。
+
+**项目原则：尽可能实现各个驱逐功能**——不要只做"逻辑压缩"（假驱逐，只改读视图），
+每个被削减的维度都要争取打通到物理回收：
+
+| 维度 | 驱逐对象 | 物理落点 |
+|---|---|---|
+| `N_tokens` | 驱逐 token/块 | tail block reclaim → `block_pool.free_blocks`（vllm 块可回收） |
+| `N_layer` | 驱逐层（跳过/不分配该层 KV） | 层级 KV 不分配/释放 |
+| `N_head` | 驱逐头 | 头级缓存裁剪 / 共享 |
+| `d_head` | 驱逐维内分量 | 低秩/剪枝后缓存缩小 |
+| `dtype` | 位宽降级 | 量化后缓存缩小（重分配） |
+
+**驱逐闭环的实现参照 = triattention**（已成功实现的物理驱逐逻辑，逐模块详解见
+`references/triattention-ascend-core-adaptation.md` §2/§5/§6）：
+- **选择/触发**：scheduler 侧信号 + 阈值（length / kv_usage 迟滞），worker 侧 force 硬边界；
+- **物理搬移**：`compact_request_kv_in_place`（原地重排为 `[kept..., dropped...]`，
+  不写零尾——零 K 参与 softmax 会污染生成）；
+- **回收**：`block_pool.free_blocks(reversed(removed))`，**复用前先
+  `_maybe_evict_cached_block` 清 prefix-cache 身份**（`_free_reclaimed_blocks`）；
+- **状态同步**：worker reclaim sync + `KVCacheManager.allocate_slots(delay_cache_blocks=True)`
+  + effective len tracker + **跨进程事件回传**（`kv_cache_events` declared 字段，
+  普通 setattr 会被 cloudpickle 丢）+ `num_blocks_per_row` 缩减 / seq_lens 有效视图 /
+  positions 位移等计数修正。
+
 同一维度内再按执行链细分职责（谁定"多少"、谁定"哪些"、谁写"视图"）：
 
 ```
@@ -199,7 +227,8 @@ KMeans → 每层预算；token 维度：每层窗口），kvpress 压 `N_tokens
 S4 视图只允许**一个唯一写者**。
 
 **编排五步（直接套用）**：
-1. **画逻辑链**：把每个方法放到链条的一段上，标注其输入/输出/写什么；
+1. **画逻辑链**：把每个方法放到链条的一段上，标注其输入/输出/写什么，并标出它
+   驱逐哪个维度（N_tokens/N_layer/N_head/d_head/dtype）、能否打通物理回收（还是仅视图）；
 2. **切职责**：同一段只留一个机制（如 S4 视图唯一写者），其余机制在该段让位；
 3. **定通信桥**：机制间传递数据用**运行期对象桥**（如 runner 属性
    `runner._xxx_rs.req[rid].layouts[layer].window`），检测用**纯 env**——
