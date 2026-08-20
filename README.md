@@ -104,7 +104,22 @@ export SQUEEZE_ASCEND_POLICY=primary   # 或 KVPRESS_ASCEND_POLICY=defer，或�
 - **与你的配置兼容**：`--enable-prefix-caching`（视图不碰内容，hash 有效）、`qwen3_5_mtp`（draft 独立 KV group，不读视图）、`FULL_DECODE_ONLY` 图回放（每步从当前 metadata 取参）、TP4（每 rank 独立）、`--quantization ascend`（非 INT8 KV，可直接打分）。
 - **物理边界（如实说明）**：worker 侧优化不回收块内存（vLLM V1 无 worker→调度器还块通道），省的是注意力计算/带宽与单请求有效 KV 容量。
 
-## 5. 离线验证（无 NPU 可跑）
+## 5. 配套方法论文档（vllm-ascend 集成技能库）
+
+`docs/skills/vllm-ascend-debugging/` 是本次两期适配沉淀的完整方法论（与本地 skill 同步）：
+
+- `SKILL.md` — 框架先行方法论（调度框架 → 选缝 → 机制设计 → 模拟调试 → 真机排查）、
+  两条技术路线决策表（视图改写 vs 物理 compact）、视图落地协议、bug 类目 G1-G33/K1-K11、
+  心跳口径与多优化包共存裁决；
+- `references/vllm-ascend-v023-seam-map.md` — v0.23.0 已验证 seam/API 表 + 视图行增量同步协议；
+- `references/runtime-scheduling-framework.md` — 运行调度框架（进程/流水线/状态时序/数据流）+ 双路线与共存章节；
+- `references/vllm-ascend-qwen35-facts.md` — Qwen3.5/qwen3_next 架构事实 + 本仓库启动命令逐项相容性；
+- `references/triattention-ascend-core-adaptation.md` — **triattention → vllm-ascend 核心适配逻辑全解**
+  （物理 compact 路线的完整参考实现：触发信号/事件回传/allocate_slots 补丁/输入修正 V1+V2/
+  原地 KV 压缩原语/回收与分配同步/Ascend 打分/观测性模板）；
+- `references/bug-catalog.md` — 实战 bug 目录（A/B/C 三组，含二期 C1-C12）。
+
+## 6. 离线验证（无 NPU 可跑）
 
 ```bash
 cd kvpress-ascend && python -m kvpress_ascend.simulate --suite      # 25 项测试
