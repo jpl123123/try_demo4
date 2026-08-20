@@ -18,7 +18,7 @@ verification methods and fail-soft fallbacks.
 | `num_computed` update timing (sample_tokens) vs one-step-late completion (G20) | Simulated | Heartbeat `reqs_compressed` matches completed requests | Complement check implemented |
 | Preemption / row rebuild racing with buffer sync | Simulated via first-block signature | Long-run stability with prefix caching + preemptions | Full row re-sync on signature mismatch |
 | MTP draft forwarding (independent KV group) | By design | Acceptance-rate A/B | Views never touch draft groups |
-| Prefix-cache hash validity | Views never touch content | Hit-rate log unchanged | Guarded by design |
+| Prefix-cache hash validity | Views never touch content | Production config is `--no-enable-prefix-caching` (eviction via KV offload) → no hash interaction; if enabled, hit-rate log unchanged | Guarded by design |
 
 ## 3. Importance signal approximation
 

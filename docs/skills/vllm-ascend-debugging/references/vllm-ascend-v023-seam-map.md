@@ -84,7 +84,7 @@ triattention 核心适配逻辑的逐模块详解见 `triattention-ascend-core-a
 
 ## 6. 案例：压缩布局公式（KV 压缩插件；其它优化类型按同格式扩充）
 
-### 6.1 视图重写（view 模式，默认推荐；写路径零改动，前缀缓存安全）
+### 6.1 视图重写（view 模式，默认推荐；写路径零改动，前缀缓存开/关均安全）
 
 ```
 m = ceil(orig_len / bs)                 # prefill 块数
@@ -153,6 +153,7 @@ marker（每个 (req, layer)）：
 ### 6.5 压缩路径决策表（view vs compact，先决策再动手）
 
 | 维度 | A. 视图重写（默认） | B. 尾部块物理搬移（compact） |
+| 本项目配置 | 兼容（prefix caching 开/关均可） | **无需 force**（本项目 `--no-enable-prefix-caching`，物理驱逐由 KV 卸载承担） |
 |---|---|---|
 | 前缀缓存 | 安全（hash 键=原行） | 破坏（需 force / delay_cache_blocks） |
 | 写路径 | 零改动（slot_mapping 不变） | 要改 positions 位移 + 槽映射 + 一次性行重写 |

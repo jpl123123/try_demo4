@@ -6,8 +6,10 @@ with **zero changes to vllm-ascend source**.
 
 Implemented as a **read-side window view rewrite**: per layer, the attention
 metadata exposes only `[sink tokens] + [recent tokens]` of the block cache.
-Physical cache content is never modified, so **`--enable-prefix-caching` stays
-valid** and the scheduler's block accounting is untouched.
+Physical cache content is never modified and the scheduler's block accounting
+is untouched. The window view is compatible with prefix caching on **or** off;
+the production config of this project is `--no-enable-prefix-caching`
+(physical eviction is handled by KV offload).
 
 ---
 
@@ -92,7 +94,8 @@ and degenerate-safe (indistinguishable layer means → uniform budget).
 
 | Config | Interaction |
 |---|---|
-| `--enable-prefix-caching` | **Safe**: window views only change per-step metadata; cache content and hashes untouched |
+| `--no-enable-prefix-caching` (**production**) | **Compatible**: window views are independent of prefix caching; physical eviction is handled by KV offload in this project |
+| `--enable-prefix-caching` (if enabled) | **Safe**: window views only change per-step metadata; cache content and hashes untouched |
 | `--speculative_config qwen3_5_mtp` | **Safe**: MTP draft has its own KV group; views apply to target full-attention layers only |
 | `--compilation-config cudagraph_mode=FULL_DECODE_ONLY` | **Safe**: graph replay refreshes metadata per step; capture skipped |
 | `--tensor-parallel-size 4` | Each rank captures its own layer hidden states; budgets computed per rank from the same cos-sim signal (local means) |

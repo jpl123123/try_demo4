@@ -156,6 +156,8 @@ TND query/key/value: (T, heads, hd) / (T, kv_heads, hd)；捕获后按 actual_se
 | 资源回收 | 不回收（省计算/带宽） | 可回收（需 engine-core 同步） |
 | 参考实现 | kvpress-ascend / SqueezeAttention-ascend | triattention（tri_3_5-fix-partial-rope-qwen35-v0.23.0；**逐模块详解见 `triattention-ascend-core-adaptation.md`**） |
 
+> 本项目（Qwen3.5-27B 长上下文服务）生产配置为 `--no-enable-prefix-caching`（物理驱逐由 KV 卸载 offload 承担）——B 路线无需 force；视图改写 A 不受影响（开/关都兼容）。prefix-cache hash 机制事实（铁律 2）仍适用于开启场景。
+
 落地协议：视图行 buffer 增量同步（物理 id 铁律、首块签名、append-only 拷贝）见
 `vllm-ascend-v023-seam-map.md` §6.4；compact 的补丁面见 `vllm-ascend-qwen35-facts.md` §4。
 

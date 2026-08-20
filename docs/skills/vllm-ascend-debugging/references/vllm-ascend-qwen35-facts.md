@@ -27,16 +27,19 @@ vllm serve /softwarePlatform/c00879303/Qwen3.5-27B-w8a8-mtp \
   --compilation-config '{"cudagraph_capture_sizes":[1,4,8,12,16,24,32,48,56,64,72,84,96,108,112,128,160,172,196,200,212,232,272,288,312,328,344,360,384,400,416,432,448,480,512], "cudagraph_mode":"FULL_DECODE_ONLY"}' \
   --speculative_config '{"method": "qwen3_5_mtp", "num_speculative_tokens": 3, "enforce_eager": true}' \
   --trust-remote-code --async-scheduling --allowed-local-media-path / \
-  --quantization ascend --enable-prefix-caching --mm-processor-cache-gb 0 \
+  --quantization ascend --no-enable-prefix-caching --mm-processor-cache-gb 0 \
   --additional-config '{"enable_cpu_binding":true}' \
   --hf-overrides '{"text_config": {"rope_parameters": {"mrope_interleaved": true, "mrope_section": [11, 11, 10], "rope_type": "yarn", "rope_theta": 10000000, "partial_rotary_factor": 0.25, "factor": 4.0, "original_max_position_embeddings": 262144}}}'
 ```
+
+> 注：早期版本启动命令带 `--enable-prefix-caching`；本项目实际以 `--no-enable-prefix-caching` + KV 卸载（offload）为准，以下结论按该配置核对。
 
 对 KV 压缩插件的直接结论：
 
 | 配置 | 结论 |
 |---|---|
-| `--enable-prefix-caching` | 视图改写安全（内容不动）；物理 compact 会破坏 hash，需 force |
+| `--no-enable-prefix-caching`（**本项目生产配置**） | prefix caching 关闭 → **物理 compact 无需 force**；物理驱逐由 **KV 卸载（offload）** 承担；视图改写不受影响（开/关都兼容） |
+| `--enable-prefix-caching`（若开启） | 视图改写安全（内容不动）；物理 compact 会破坏 hash，需 force |
 | `qwen3_5_mtp`（`AscendStep3p5MTPProposer`） | draft 独立 KV group + 元数据在 sample_tokens 里重建 → **不读 group-0 视图**，无需 cm 重写 |
 | `FULL_DECODE_ONLY` | `update_graph_params` 每步从 `attn_metadata[key].seq_lens/block_tables` 取参（attention_v1.py:745-762，非 SWA 刷新 block_tables）→ 每步重建的视图天然生效；**捕获期假元数据跳过** |
 | `--max-num-batched-tokens 4096` | 262144 prompt 必然分块 prefill → 完成判定用 `before+sched`，必须配 mid-prefill 渐进锚点（G17） |

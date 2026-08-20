@@ -109,8 +109,8 @@ vLLM v1 把调度与执行拆开：
 
 | 机制 | 表达 | 前缀缓存 | 逐层/逐请求可变 | 粒度 | 侵入面 | 适用 |
 |---|---|---|---|---|---|---|
-| **A. 视图重写（view，默认）** | 每层视图行 = `[保留块]+[真行 m 起]`；`view_len = Σ min(bs, orig−b·bs) + (true_len−orig)` | **有效** | **支持** | 块级 | 仅 per-layer 元数据 | 用户带 `--enable-prefix-caching` 的场景 |
-| **B. 尾部块物理搬移（compact）** | 保留 token 物理写进尾部块；`k = m − delta//bs` | **失效**（需 force） | 不可能（共享槽映射） | token 级（head 统一） | positions 位移 + 槽映射 + 一次性行重写 + 计数缩减 + seq_lens/cm | 无前缀缓存、要 token 级精度 |
+| **A. 视图重写（view，默认）** | 每层视图行 = `[保留块]+[真行 m 起]`；`view_len = Σ min(bs, orig−b·bs) + (true_len−orig)` | **有效** | **支持** | 块级 | 仅 per-layer 元数据 | 侵入面最小、逐层/逐请求可变；本项目生产配置（prefix caching 关闭 + KV 卸载）与开启 prefix caching 均适用 |
+| **B. 尾部块物理搬移（compact）** | 保留 token 物理写进尾部块；`k = m − delta//bs` | **失效**（需 force） | 不可能（共享槽映射） | token 级（head 统一） | positions 位移 + 槽映射 + 一次性行重写 + 计数缩减 + seq_lens/cm | 本项目关闭 prefix caching（`--no-enable-prefix-caching`）→ **无需 force 即可用**；要 token 级精度或需配合卸载做真物理驱逐时选它 |
 | **C. 窗口视图（squeeze）** | 视图行 = `[sink 块]+[最后 recent 块]`；`view_len = true_len − (recent_first − sink_blocks)·bs` | 有效 | 支持 | 块级（边界 ±1 块近似） | 仅 per-layer 元数据 | StreamingLLM 式逐层窗口 |
 
 **view 模式关键规则**（案例三条，违反即错）：① 强制保留最后一个非对齐块（`orig % bs != 0` 时块 `m−1` 必须进视图——新 decode token 落其 padding 槽，不保留则新 token 不可见；让位时只在已选块内 argmin）；② view_len 按块 token 数（末块部分填充感知）加新增 token，**末块内封顶，绝不读零 padding**；③ FIA 读 `view_row[p//bs]` 槽 `p%bs`——视图是块序列，不是 token 子集。
@@ -134,7 +134,7 @@ vLLM v1 把调度与执行拆开：
 | 工程面 | 仅 worker 侧 3-4 个 seam | engine-core 补丁面（scheduler/KVCacheManager/EngineCore，见 qwen35-facts §4） |
 | 参考实现 | kvpress-ascend / SqueezeAttention-ascend | triattention（tri_3_5-fix-partial-rope-qwen35-v0.23.0，**逐模块详解见 `references/triattention-ascend-core-adaptation.md`**：信号/触发守卫/事件回传三优先级/allocate_slots 补丁/async 边界屏障/输入修正 V1+V2/原地 compact 三种放置/回收与分配同步/Ascend 打分后端/观测性模板） |
 
-决策输入：用户是否带 `--enable-prefix-caching`（A 安全/B 需 force）、是否要求 KV 显存真回收（只有 B）、
+决策输入：prefix caching 开/关（本项目为**关**：`--no-enable-prefix-caching`，物理驱逐由 **KV 卸载 offload** 承担 → B 无需 force）、是否要求 KV 显存真回收（只有 B，本项目由卸载承担）、
 是否需要逐层差异化预算（A 天然支持）、可接受工程复杂度（A 低/B 高）。**两者共用 90% 的"读视图修正"知识**
 （seq_lens/slot mapping/block table 视图），差异只在写路径与调度器同步。
 
@@ -451,7 +451,7 @@ execute_model_pre（快照 before 状态：num_computed/num_scheduled/num_prompt
 ### 5.4 用户启动命令的快速体检（通用 checklist）
 
 1. **投机解码**（`--speculative_config`）→ 查框架 L2/L3：draft 何时跑、读什么元数据（step3.5 独立 group vs 共享 group）。
-2. **前缀缓存**（`--enable-prefix-caching`）→ 你的优化是否碰物理缓存内容；碰了 = hash 失效风险。
+2. **前缀缓存**（本项目生产配置为 `--no-enable-prefix-caching`，物理驱逐由 KV 卸载 offload 承担）→ 关闭时物理 compact 无 hash 顾虑；若开启（`--enable-prefix-caching`）则你的优化是否碰物理缓存内容，碰了 = hash 失效风险。
 3. **TP/DP/PP 并行** → 每 rank 独立执行；跨 rank 一致的参数要同步。
 4. **图模式**（`--compilation-config` FULL_DECODE_ONLY）→ 只 patch 每步重建对象；图捕获期假元数据别碰；回放每步从当前 metadata 取参。
 5. **分块 prefill**（小 `--max-num-batched-tokens`）→ 长 prompt 必然分块，完成/进度判定用 `before + 本步`。
@@ -474,7 +474,7 @@ execute_model_pre（快照 before 状态：num_computed/num_scheduled/num_prompt
 3. **MTP/并行语义**：draft 可见性、跨 rank 一致性、分块 prefill 的完成判定；
 4. **近似与约束**：块式/共享结构带来的粒度近似（head 统一、块粒度等），README 明示；
 5. **模拟覆盖级别与 RTR**：哪些环节已由 L0-L2 离线验证、哪些仍需真机确认（逐项列）；未达 DoD 时明确说"模拟进行到哪一级"；
-6. **路线决策**：视图改写 vs 物理 compact（或混合）的选择与理由（§2.3b），与用户配置（前缀缓存/图模式/MTP）的相容性逐项列出；
+6. **路线决策**：视图改写 vs 物理 compact（或混合）的选择与理由（§2.3b），与用户配置（本项目：`--no-enable-prefix-caching` + KV 卸载；以及图模式/MTP）的相容性逐项列出；
 7. **心跳口径**：seams/hit/FAIL 的语义、lazy seam 处理、`skipped_*` 计数含义——让用户能自己读懂每步日志；
 8. **共存裁决**：多优化包同开时的归属规则与切换方法（§5.5）。
 

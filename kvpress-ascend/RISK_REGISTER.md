@@ -16,9 +16,9 @@ each lists why, how to verify on the real machine, and the fail-soft fallback.
 | Risk | Why | Verification | Fallback |
 |---|---|---|---|
 | `num_computed` update timing (sample_tokens) vs one-step-late completion (G20) | Simulated | Heartbeat counters: `reqs_compressed` matches completed requests | Complement check + mid anchors (G17) |
-| Preemption / row rebuild (move/swap/add_row) racing with buffer sync | Simulated (first-block signature) | Long-run stability with `--enable-prefix-caching` and preemptions | Full row re-sync on signature mismatch |
+| Preemption / row rebuild (move/swap/add_row) racing with buffer sync | Simulated (first-block signature) | Long-run stability with preemptions (production: `--no-enable-prefix-caching`) | Full row re-sync on signature mismatch |
 | MTP draft forward reading group-0 views | Verified by design: draft has its own KV group; draft metadata rebuilt in sample_tokens | Acceptance rate A/B with/without patch | None needed (draft never sees views) |
-| Prefix-cache hash validity | View mode never touches content; hash keyed on original rows | `--enable-prefix-caching` hit-rate log unchanged | If a future change rewrites rows, hashes would break — guarded by design |
+| Prefix-cache hash validity | View mode never touches content; hash keyed on original rows | Production config is `--no-enable-prefix-caching` (eviction via KV offload) → no hash interaction; if prefix caching is enabled, hit-rate log unchanged | If a future change rewrites rows, hashes would break — guarded by design |
 
 ## 3. Performance
 

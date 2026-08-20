@@ -45,7 +45,7 @@ vllm serve /softwarePlatform/c00879303/Qwen3.5-27B-w8a8-mtp \
   --async-scheduling \
   --allowed-local-media-path / \
   --quantization ascend \
-  --enable-prefix-caching \
+  --no-enable-prefix-caching \
   --mm-processor-cache-gb 0 \
   --additional-config '{"enable_cpu_binding":true}' \
   --hf-overrides '{"text_config": {"rope_parameters": {"mrope_interleaved": true, "mrope_section": [11, 11, 10], "rope_type": "yarn", "rope_theta": 10000000, "partial_rotary_factor": 0.25, "factor": 4.0, "original_max_position_embeddings": 262144}}}'
@@ -101,7 +101,7 @@ export SQUEEZE_ASCEND_POLICY=primary   # 或 KVPRESS_ASCEND_POLICY=defer，或�
   - squeeze：`[sink 块] + [recent 块]` 窗口视图行，随 decode 滑动。
 - **捕获点**：kvpress 在 `AscendAttentionBackendImpl.forward`（TND query 滚动窗口，含 C8 变体）；squeeze 包装 decoder layer forward（cos-sim 层输入/输出）。
 - **触发**：prefill 完成 + mid-prefill 渐进锚点（长上下文防“压缩永远不触发”）+ decode 重锚点；完成判定兼容 num_computed 晚更新（G20 补检）。
-- **与你的配置兼容**：`--enable-prefix-caching`（视图不碰内容，hash 有效）、`qwen3_5_mtp`（draft 独立 KV group，不读视图）、`FULL_DECODE_ONLY` 图回放（每步从当前 metadata 取参）、TP4（每 rank 独立）、`--quantization ascend`（非 INT8 KV，可直接打分）。
+- **与你的配置兼容**：`--no-enable-prefix-caching`（**本项目生产配置**：prefix caching 关闭、物理驱逐由 KV 卸载 offload 承担 → 视图改写与物理 compact 均可行，后者无需 force）、`qwen3_5_mtp`（draft 独立 KV group，不读视图）、`FULL_DECODE_ONLY` 图回放（每步从当前 metadata 取参）、TP4（每 rank 独立）、`--quantization ascend`（非 INT8 KV，可直接打分）。
 - **物理边界（如实说明）**：worker 侧优化不回收块内存（vLLM V1 无 worker→调度器还块通道），省的是注意力计算/带宽与单请求有效 KV 容量。
 
 ## 5. 配套方法论文档（vllm-ascend 集成技能库）

@@ -5,8 +5,11 @@ Monkeypatch adapter that ports **kvpress** KV-cache compression to
 
 The adapter implements kvpress's *score → top-k keep* mechanism on vllm-ascend's
 block-based KV cache as a **read-side view rewrite**: physical cache content is
-never modified, so **`--enable-prefix-caching` stays valid** and the scheduler
-keeps its original block accounting.
+never modified and the scheduler keeps its original block accounting. The view
+is compatible with prefix caching on **or** off; the production config of this
+project is `--no-enable-prefix-caching` (physical eviction is handled by KV
+offload), under which the physical-compaction route would also be viable
+without force.
 
 ---
 
@@ -107,7 +110,8 @@ fail-soft: an error logs and the step continues unoptimized.
 
 | Config in the target command | Interaction |
 |---|---|
-| `--enable-prefix-caching` | **Safe**: view rewrite never touches physical cache content, so block hashes stay valid |
+| `--no-enable-prefix-caching` (**production**) | **Compatible**: view rewrite is independent of prefix caching; physical eviction is handled by KV offload in this project |
+| `--enable-prefix-caching` (if enabled) | **Safe**: view rewrite never touches physical cache content, so block hashes stay valid |
 | `--speculative_config qwen3_5_mtp` | **Safe**: the MTP drafter has its own KV group; its metadata is rebuilt inside sample_tokens and never reads the group-0 views |
 | `--compilation-config cudagraph_mode=FULL_DECODE_ONLY` | **Safe**: graph replay refreshes `block_tables`/`seq_lens` from the per-layer metadata every step; capture-time fake metadata is skipped |
 | `--tensor-parallel-size 4` | Each rank optimizes its own TP-split cache independently (scores are local per rank) |

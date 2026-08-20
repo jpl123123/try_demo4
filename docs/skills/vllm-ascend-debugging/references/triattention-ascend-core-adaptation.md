@@ -87,6 +87,8 @@ engine-core 收到 applied 事件后 `_apply_compression_events`：
 
 ### 2.6 allocate_slots 补丁（防压缩后 hash 污染）
 
+> 配置前提：本项目生产配置为 `--no-enable-prefix-caching`（物理驱逐由 KV 卸载承担）；allocate_slots 的 prefix-cache 防御在关闭时是空转但无害，保留以兼容未来开启。
+
 `KVCacheManager.allocate_slots` 包装：对已物理压缩的请求，**临时**把
 `request.num_computed_tokens` 改为 effective 值并传 `delay_cache_blocks=True`，
 让 vLLM 分配槽但**跳过后续 prefix-cache commit**（物理搬移后原前缀 hash 链已失效），
