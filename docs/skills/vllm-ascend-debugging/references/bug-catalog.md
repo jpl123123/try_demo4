@@ -72,3 +72,19 @@
 | C10 | L2 端到端不变量用 `array_equal` 误报 | 视图按块序读、参考按真实序读：槽**集合**相同、顺序不同（注意力与顺序无关） | 不变量改集合比较 + 长度断言（绝不读未写 padding）；参考集用**步前布局快照**（anchor 步 S4 先于 S5，视图下一步才生效） | G24/时序 | L2 跑批 | test_l2_invariant |
 | C11 | 小预算测试配置被 env 地板值吞掉（`max(1024,...)`） | envs 层给 mid/decode 预算设了过高下限 | 地板降到 16；harness 的 `make_runner` 先清空本包全部 env 再设新值（防跨测试污染） | G11 | 跑批 | test_l2（budget=40） |
 | C12 | 心跳/汇总把惰性安装的 seam 报 FAILED | layer_hook 在首个推理步才安装（模型加载后才存在），安装期汇总误判 | summary 只对 eager seams 判 FAIL（`EAGER_SEAMS` 口径），lazy seam 标记为声明项 | G16 变体 | L1 安装测试 | test_l1_seams |
+
+## D. 三期：真机 no_q / compose 组合模式（2025-08）
+
+| # | 症状 | 根因 | 修复 | 类目 | 发现途径 | 回归测试 |
+|---|---|---|---|---|---|---|
+| D1 | 真机心跳 `hit=94560` 巨大但 `viewed=0`、`skipped_no_q=337280` | `mark_hit("backend_forward")` 在 append 循环**外无条件执行**——hit 增长只证明 forward 被调用，不证明捕获成功（诊断误导） | `mark_hit` 只在 append 成功后计数；`maybe_capture_query` 每个提前返回分支打 `cap_*` 分原因计数（cap_guarded/cap_len_mismatch/cap_layer_miss/...），心跳 `cap=app:.. skip:..` 一眼定位断点 | 可观测性（G16 变体） | 真机日志 | test_capture_fallback |
+| D2 | snapkv 每层打分都 `no_q`（捕获被真机环境阻断，具体 guard 待 cap_* 定位） | 捕获链路任一 guard（capturing/draft/图回放/长度错位）命中即整层跳过 → 压缩全部失败 | `KVPRESS_ASCEND_PRESS_FALLBACK=streaming`（默认）：无窗口时降级 positional 打分，压缩照常发生（`fallback_streaming` 计数）；`=none` 关闭 | G14/G21 变体（兜底优先于跳过） | 真机日志 | test_snapkv_falls_back_to_streaming_without_window |
+| D3 | compose 模式下 kvpress 完成压缩看不到 squeeze 预算 | 包装嵌套顺序 = 安装顺序（晚装者最外层、其 finally/pass 最后跑）；真机 kvpress 先装（最内层）→ 其 pass 先于 squeeze 聚类跑 | 完成延迟一拍：`_compose_completion_deferred`（squeeze 激活且预算未就绪且 `compose_defer_count<2`）→ 延迟，G20 补检下一步重触发；上限防死锁 | 时序（L2 状态时序） | 设计推演（真机序模拟） | test_compose_completion_defer_decision |
+| D4 | compose 让位判定读对方模块状态（`kvpress_ascend._APPLIED`）→ 测试污染、潜在启动竞态 | 跨包状态检测违背"绝不跨包 import/读模块状态"纪律 | `_compose_defers_views` 改**纯 env**（两个 policy 都 == compose）；跨包数据走 runner 属性桥 | G11 变体（组合模式版） | 测试跑批 | test_compose_* |
+| D5 | 新增 compose 测试后，既有 L2 窗口不变量失败（vs 52 vs 53） | compose 测试把 kvpress 包装（class 级）/env（kvpress 系列变量）/模块状态残留到共享 FakeRunner 类与进程 → 后续测试被 kvpress S4 改写污染 | 组合测试用**独立 runner 子类**装 kvpress 包装；两个 harness 的 make_runner 统一**清两包全部 env** | G11/G24 | 全量跑批 | test_compose（隔离）+ 全套件 |
+| D6 | `class _Cfg: policy = policy` → `NameError: name 'policy' is not defined` | Python **类体不参与外层函数作用域闭包**（class body 只查 类命名空间→全局→builtins） | 改用 `types.SimpleNamespace(policy=policy)` | Python 语言陷阱 | L1 测试编写 | test_l1_seams |
+| D7 | bash heredoc 里写多行 Python 字符串 → `SyntaxError: unterminated string literal`；尾随空格 → `assert old in s` 静默失败 | heredoc 中字符串字面量跨物理行/行尾残留空格与文件内容不匹配 | 字符串一律单物理行（显式 `\n`）；编辑用 edit 工具/先 repr 核对锚点 | 工具链 | 编辑期 | — |
+
+> 三期方法论沉淀：多机制**同时兼容**不是把逻辑写进一个包，而是按逻辑链分工
+> （§2.3d compose 原则）——层维度预算 / token 维度选择 / 视图表达各归一个机制，
+> 唯一写者 + 运行期桥 + 纯 env 检测 + 延迟一拍 + fallback 兜底。

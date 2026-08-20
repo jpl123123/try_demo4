@@ -1,6 +1,6 @@
 ---
 name: vllm-ascend-debugging
-description: Use when working on vllm-ascend / vLLM v1 (Ascend NPU) model-optimization integration — monkeypatching external libraries or model optimizations (KV-cache compression, attention variants, speculative decoding, sampling, quantization, custom layers, etc.) into vllm-ascend without touching its source, planning patch seams, offline simulated debugging without NPU hardware, or diagnosing on-machine failures (ImportError, gather_v3/AI Core, ACL stream synchronize failed, worker crash, skipped optimization, prefix-cache/MTP issues). Covers the scheduling-framework-first methodology (build the code-level runtime map of vllm-ascend + your hooks before coding, keep updating it from debug feedback), the systematic debug state machine, editing-time self-checking, the hardware-free simulated-debug protocol (fidelity tiers, step driver, invariant registry, runtime risk register), a verified seam/API reference for vllm-ascend v0.23.0, and a growing bug catalog — with the two-phase kvpress / SqueezeAttention KV-compression adaptation as the fully worked example (phase 2 adds — view-mode implementation protocol with incremental per-layer buffer sync, the view-vs-compact route decision table, multi-package coexistence via KV_ASCEND_OWNER, Qwen3.5/qwen3_next architecture facts, triattention's physical-compaction patch surface, install-chain verification for .pth-wheel packages, and the C1-C12 bug patterns).
+description: Use when working on vllm-ascend / vLLM v1 (Ascend NPU) model-optimization integration — monkeypatching external libraries or model optimizations (KV-cache compression, attention variants, speculative decoding, sampling, quantization, custom layers, etc.) into vllm-ascend without touching its source, planning patch seams, offline simulated debugging without NPU hardware, or diagnosing on-machine failures (ImportError, gather_v3/AI Core, ACL stream synchronize failed, worker crash, skipped optimization, prefix-cache/MTP issues). Covers the scheduling-framework-first methodology (build the code-level runtime map of vllm-ascend + your hooks before coding, keep updating it from debug feedback), the systematic debug state machine, editing-time self-checking, the hardware-free simulated-debug protocol (fidelity tiers, step driver, invariant registry, runtime risk register), a verified seam/API reference for vllm-ascend v0.23.0, and a growing bug catalog — with the two-phase kvpress / SqueezeAttention KV-compression adaptation as the fully worked example (phase 2 adds — view-mode implementation protocol with incremental per-layer buffer sync, the view-vs-compact route decision table, multi-package coexistence via KV_ASCEND_OWNER, Qwen3.5/qwen3_next architecture facts, triattention's physical-compaction patch surface, install-chain verification for .pth-wheel packages, and the C1-C12 bug patterns; phase 3 adds — multi-mechanism composition (compose principle: run multiple optimizations on one pipeline by responsibility division over the whole vllm-ascend logic chain instead of pick-one), capture diagnostics with per-branch counters, press fallback, and the D1-D7 bug patterns).
 whenToUse: Whenever the user mentions vllm-ascend, vLLM v1 on Ascend NPU, or any model optimization / monkeypatch / patch adaptation on it (KV-cache compression, attention changes, speculative decoding, sampling, quantization, model support), or pastes a vllm-ascend traceback (ImportError, partially initialized module, gather_v3 index out of range, ACL stream synchronize failed, AI Core error, worker crash) — or asks to plan, debug or troubleshoot such integration work. Load the skill BEFORE reading code, BEFORE proposing patches, BEFORE writing offline simulation tests, and BEFORE diagnosing real-machine logs.
 ---
 
@@ -45,6 +45,10 @@ whenToUse: Whenever the user mentions vllm-ascend, vLLM v1 on Ascend NPU, or any
   ↓
 [3] 机制设计：把优化目标"转换"成框架能表达的形式（§2.3 的决策轴）；
       KV/资源类优化先走 §2.3b 路线决策（视图改写 vs 物理 compact vs 混合）
+  ↓
+[3b] 多机制编排：任务若有多个方法/多个包——**不要二选一**，先画整体逻辑链
+      （层维度预算 → token 维度选择 → 视图表达 → 触发调度），按职责分工让它们
+      同时工作（§2.3d compose 原则）
   ↓
 [4] 深入 coding（小步快验，见 §3.5 编辑期自查；视图路线落地协议见 §2.3c）
   ↓
@@ -156,6 +160,35 @@ vLLM v1 把调度与执行拆开：
 - **图模式**：FULL_DECODE_ONLY 下 buffer 宽必须等于捕获宽度；捕获期（`capturing`）跳过。
 - **元数据替换**：view 层 = `copy.copy(meta)` + 换 `block_tables`/`seq_lens`/`seq_lens_cpu`/`seq_lens_list`
   （seq_lens 是 CPU 张量）；同组共享对象只在被替换的层上分裂。
+
+### 2.3d 多机制编排（compose 原则：多个方法同时兼容，三期沉淀）
+
+**原则**：任务有多个优化方法/多个 monkeypatch 包时，**不要做成二选一**——从
+**整体 vllm-ascend 逻辑链**的角度给每个机制分一段职责，让它们在同一条流水线里
+同时工作。逻辑链各段天然正交，职责不重叠就不会互相覆盖：
+
+```
+层/请求维度预算（每层保留多少）→ token 维度选择（保留哪些）→ 视图/布局表达（怎么读）
+→ 触发/调度（何时执行）→ 采样/后处理
+```
+
+**案例（kvpress + squeeze 组合）**：squeeze 负责层维度（cos-sim + KMeans → 每层
+预算），kvpress 负责 token 维度 + 视图（打分压缩，`n_kept = 预算`）——2D 预算 ×
+块级打分同时生效；S4 视图只允许**一个唯一写者**。
+
+**编排五步（直接套用）**：
+1. **画逻辑链**：把每个方法放到链条的一段上，标注其输入/输出/写什么；
+2. **切职责**：同一段只留一个机制（如 S4 视图唯一写者），其余机制在该段让位；
+3. **定通信桥**：机制间传递数据用**运行期对象桥**（如 runner 属性
+   `runner._xxx_rs.req[rid].layouts[layer].window`），检测用**纯 env**——
+   绝不跨包 import / 不读对方模块状态（启动竞态与测试污染都源于此）；
+4. **排时序**：包装嵌套顺序 = 安装顺序（晚装者最外层、其 pass 最后跑）→
+   后跑的机制若被先跑的依赖，先跑方要**延迟一拍**（有上限防死锁，用完成补检兜底）；
+5. **降级回退**：少开一个开关即自动回退单机制/独占模式，且各机制本身有
+   fallback（如 snapkv 无窗口 → streaming 打分），保证优化照常发生。
+
+**可观测性**：每个机制的职责边界打独立计数（`compose_budget_used` /
+`compose_deferred_views` / `compose_wait_budget`），心跳一眼看出谁在干活、谁让位。
 
 ### 2.4 交付物形态（monkeypatch 适配包通用骨架，二期验证版）
 
@@ -471,7 +504,7 @@ execute_model_pre（快照 before 状态：num_computed/num_scheduled/num_prompt
   **绝不允许同时改写**（会让位包只观测）。
 - 用户"export 了两个但只有一个生效"不是 bug：默认先装者生效；要换主策略用 policy env 或只 export 一个。
 
-**组合模式 compose（三期新增，本项目"多机制同时兼容"的答案）**：两包**同时安装、分工协作**，
+**组合模式 compose（三期新增；§2.3d compose 原则的落地案例）**：两包**同时安装、分工协作**，
 而不是二选一。`KVPRESS_ASCEND_POLICY=compose` + `SQUEEZE_ASCEND_POLICY=compose` + 两个 gate 都 export：
 
 | 职责 | 包 |
