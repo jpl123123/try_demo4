@@ -56,6 +56,11 @@ def _strategy_decision() -> tuple[bool, str]:
     owner = os.environ.get("KV_ASCEND_OWNER", "")
     if my_policy == "defer":
         return False, "KVPRESS_ASCEND_POLICY=defer"
+    if my_policy == "compose" or os.environ.get("SQUEEZE_ASCEND_POLICY", "").lower() == "compose":
+        # Compose mode: both adapters install together. kvpress owns scoring +
+        # view application (S1/S4/S5); squeeze owns layer budgets (S6 + its
+        # clustering pass, views deferred). No ownership marker is needed.
+        return True, ""
     if my_policy == "primary":
         return True, ""
     if os.environ.get("SQUEEZE_ASCEND_POLICY", "").lower() == "primary":

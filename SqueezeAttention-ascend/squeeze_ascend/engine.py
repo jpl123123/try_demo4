@@ -47,6 +47,11 @@ def _strategy_decision() -> tuple[bool, str]:
     owner = os.environ.get("KV_ASCEND_OWNER", "")
     if my_policy == "defer":
         return False, "SQUEEZE_ASCEND_POLICY=defer"
+    if my_policy == "compose" or os.environ.get("KVPRESS_ASCEND_POLICY", "").lower() == "compose":
+        # Compose mode: both adapters install together. squeeze owns the
+        # cos-sim capture + clustering (per-layer budgets); its window-view
+        # application is deferred to kvpress (view.py checks compose).
+        return True, ""
     if my_policy == "primary":
         return True, ""
     if os.environ.get("KVPRESS_ASCEND_POLICY", "").lower() == "primary":

@@ -114,6 +114,7 @@ class ReqState:
     layouts: dict = field(default_factory=dict)  # layer_name -> LayoutState
     queries: dict = field(default_factory=dict)  # layer_name -> QueryWindow
     last_seen: int = -1  # num_computed at previous step (regression detection)
+    compose_defer_count: int = 0  # compose: completion deferred waiting for squeeze budgets
 
 
 @dataclass

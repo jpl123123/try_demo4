@@ -325,7 +325,11 @@ def make_runner(layer_names=None, cfg_env=None, bs=BLOCK_SIZE, num_blocks=NUM_BL
 
     for k in list(os.environ):
         low = k.lower()
-        if low in ("kvpress", "kvpress_ascend") or low.startswith("kvpress_ascend_"):
+        if (
+            low in ("kvpress", "kvpress_ascend", "squeeze", "squeeze_ascend")
+            or low.startswith("kvpress_ascend_")
+            or low.startswith("squeeze_ascend_")
+        ):
             os.environ.pop(k, None)
     if cfg_env:
         for k, v in cfg_env.items():

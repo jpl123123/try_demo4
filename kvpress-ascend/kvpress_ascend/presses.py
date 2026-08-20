@@ -101,10 +101,12 @@ def score_layer(
     req: ScoreRequest,
     ratio: float,
     cfg,
+    press: str | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Dispatch to the configured press. Returns (token_scores, forced_blocks)."""
+    """Dispatch to the configured press (or an explicit override, used by the
+    snapkv-no-window fallback). Returns (token_scores, forced_blocks)."""
     n_kept = max(0, int(round(req.seq_len * (1.0 - ratio))))
-    press = cfg.press
+    press = press or cfg.press
     if press == "snapkv":
         tok, forced = score_snapkv(req, cfg.window_size, cfg.force_keep_window)
     elif press == "streaming":

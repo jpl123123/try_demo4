@@ -43,6 +43,36 @@ class _SkipLayer(Exception):
         self.kind = kind
 
 
+def _squeeze_active(runner) -> bool:
+    """Compose mode: is squeeze-ascend installed and running on this runner?"""
+    try:
+        return getattr(runner, "_squeeze_ascend_rs", None) is not None
+    except Exception:
+        return False
+
+
+def _squeeze_window_budget(runner, req_id: str, layer_name=None):
+    """Compose mode: per-layer keep budget (tokens) from squeeze-ascend's
+    clustering (its WindowLayout.window). layer_name=None -> any layer."""
+    try:
+        rs = getattr(runner, "_squeeze_ascend_rs", None)
+        if rs is None:
+            return None
+        rs_req = rs.req.get(req_id)
+        if rs_req is None:
+            return None
+        if layer_name is not None:
+            layout = rs_req.layouts.get(layer_name)
+            if layout is None:
+                return None
+            return int(layout.window)
+        for layout in rs_req.layouts.values():
+            return int(layout.window)  # any layer's budget (per-layer differ)
+        return None
+    except Exception:
+        return None
+
+
 def _kv_tensors(runner, layer_name: str):
     """Return (key_cache, value_cache) or None for a layer."""
     try:
@@ -98,6 +128,12 @@ def _compress_layer(ctx, rs, rs_req, req_id: str, layer_name: str,
     if true_len < _MIN_COMPRESS_TOKENS:
         raise _SkipLayer("short")
     n_kept = max(1, int(round(true_len * (1.0 - ratio))))
+    # Compose mode: squeeze-ascend's per-layer budget (tokens to keep) wins.
+    if cfg.is_compose():
+        budget = _squeeze_window_budget(ctx.runner, req_id, layer_name)
+        if budget is not None and 0 < budget < true_len:
+            n_kept = budget
+            registry.bump("compose_budget_used")
     if n_kept >= true_len:
         raise _SkipLayer("ratio_zero")
 
@@ -115,21 +151,30 @@ def _compress_layer(ctx, rs, rs_req, req_id: str, layer_name: str,
 
     window_q = None
     keys = None
-    if cfg.press == "snapkv":
+    press = cfg.press
+    if press == "snapkv":
         qw = rs_req.queries.get(layer_name)
         window_q = qw.ordered() if qw is not None else None
         if window_q is None or window_q.shape[0] == 0:
-            raise _SkipLayer("no_q")
-        kv = _kv_tensors(ctx.runner, layer_name)
-        if kv is None:
-            raise _SkipLayer("no_kv")
-        key_cache = kv[0]
-        if _is_quantized_cache(key_cache):
-            raise _SkipLayer("c8")
-        # ground truth: the TP-split local cache tensor shapes
-        kv_heads = int(key_cache.shape[2]) if key_cache.dim() == 4 else rs.num_kv_heads
-        slots = core.slots_for_len(visible, total_visible, bs)
-        keys = _gather_keys(key_cache, slots, kv_heads)
+            # Real-machine guard: if Q-capture is blocked (draft/graph/profile/
+            # metadata mismatch), degrade to positional streaming scoring for
+            # this layer instead of skipping it - compression keeps working.
+            if cfg.press_fallback and cfg.press_fallback != "none":
+                registry.bump("fallback_streaming")
+                press = "streaming"
+            else:
+                raise _SkipLayer("no_q")
+        else:
+            kv = _kv_tensors(ctx.runner, layer_name)
+            if kv is None:
+                raise _SkipLayer("no_kv")
+            key_cache = kv[0]
+            if _is_quantized_cache(key_cache):
+                raise _SkipLayer("c8")
+            # ground truth: the TP-split local cache tensor shapes
+            kv_heads = int(key_cache.shape[2]) if key_cache.dim() == 4 else rs.num_kv_heads
+            slots = core.slots_for_len(visible, total_visible, bs)
+            keys = _gather_keys(key_cache, slots, kv_heads)
 
     req = ScoreRequest(
         layer_name=layer_name,
@@ -142,7 +187,7 @@ def _compress_layer(ctx, rs, rs_req, req_id: str, layer_name: str,
         num_kv_heads=int(keys.shape[1]) if keys is not None else rs.num_kv_heads,
         block_size=bs,
     )
-    tok, forced = score_layer(req, ratio, cfg)
+    tok, forced = score_layer(req, ratio, cfg, press=press)
     if tok.shape[0] != total_visible:
         raise _SkipLayer("bad_scores", "score length mismatch")
     forced = forced[forced < valid] if forced.size else forced
@@ -204,6 +249,23 @@ def _compress_request(ctx, rs, i: int, req_id: str, phase: str, true_len: int) -
             registry.bump("skipped_error")
             logger.debug("layer compression failed: %s", layer_name, exc_info=True)
     return layers_done
+
+
+def _compose_completion_deferred(cfg, runner, req_id, rs_req) -> bool:
+    """Compose mode: should this completion be deferred one step?
+
+    The two execute_model wrappers nest by install order; on the real machine
+    kvpress installs first (innermost) so its pass runs BEFORE squeeze's in the
+    same step, and the per-layer budgets are not ready at completion.  Defer
+    (bounded by compose_defer_count) so the G20 complement retriggers the next
+    step with budgets available.
+    """
+    return bool(
+        cfg.is_compose()
+        and _squeeze_active(runner)
+        and _squeeze_window_budget(runner, req_id) is None
+        and rs_req.compose_defer_count < 2
+    )
 
 
 def _finish_compress(ctx, rs, req_id: str, phase: str, true_len: int,
@@ -274,6 +336,19 @@ def run_compression_pass(ctx: StepContext) -> None:
                 # previous step while num_computed was only updated later.
                 if 0 < prompt <= before and rs_req.last_seen < prompt:
                     phase = "complete"
+            # Compose mode: squeeze's pass may run AFTER ours in the same step
+            # (wrapper nesting follows install order). Defer completion once or
+            # twice so the per-layer budgets are ready before we compress; the
+            # G20 complement retriggers on the next step. Bounded by
+            # compose_defer_count so a missing budget can never block forever.
+            if phase == "complete" and _compose_completion_deferred(
+                cfg, ctx.runner, req_id, rs_req
+            ):
+                rs_req.compose_defer_count += 1
+                registry.bump("compose_wait_budget")
+                phase = None
+        if phase is not None and phase == "complete":
+            rs_req.compose_defer_count = 0
         if phase is None and not rs_req.compression_done and cfg.mid_prefill:
             if before + sched < prompt and true_len >= rs_req.next_anchor:
                 phase = "mid"

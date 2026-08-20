@@ -87,7 +87,7 @@ and degenerate-safe (indistinguishable layer means → uniform budget).
 | `SQUEEZE_ASCEND_LAYERS` | all | layer range, e.g. `0-31` |
 | `SQUEEZE_ASCEND_STEP_LOG` | 1 | per-step heartbeat |
 | `SQUEEZE_ASCEND_DRY_RUN` | 0 | compute budgets only, never apply views |
-| `SQUEEZE_ASCEND_POLICY` | auto | auto \| primary \| defer (vs kvpress-ascend) |
+| `SQUEEZE_ASCEND_POLICY` | auto | auto \| primary \| defer \| **compose** (vs kvpress-ascend; compose = 两包组合模式) |
 | `SQUEEZE_ASCEND_LOG` | info | debug \| info \| warning |
 
 ## Compatibility with the target launch command
@@ -103,15 +103,28 @@ and degenerate-safe (indistinguishable layer means → uniform budget).
 
 ## Coexistence with kvpress-ascend
 
-Both adapters rewrite the same seams. With both gates on, ownership is decided
-deterministically at interpreter startup by `.pth` name order
-(`kvpress_ascend.pth` < `squeeze_ascend.pth`, so kvpress owns the seams by
-default and this package logs `DEFERRED: owner=kvpress installed first`). The
-winner sets the shared `KV_ASCEND_OWNER` marker.
+Two modes:
 
-To let SqueezeAttention own the seams: `export SQUEEZE_ASCEND_POLICY=primary`
-(or `KVPRESS_ASCEND_POLICY=defer`), or don't `export kvpress`. Explicit
-policies always override ownership.
+**1. Exclusive (default)** — one adapter owns the seams (`.pth` name order:
+kvpress first by default; `KV_ASCEND_OWNER` marker decides; force with
+`SQUEEZE_ASCEND_POLICY=primary` / `KVPRESS_ASCEND_POLICY=defer`).
+
+**2. Compose (multi-mechanism, the project's goal)** — BOTH adapters work
+together:
+
+```bash
+export kvpress=1
+export squeeze=1
+export KVPRESS_ASCEND_POLICY=compose
+export SQUEEZE_ASCEND_POLICY=compose
+```
+
+squeeze-ascend owns the layer dimension (S6 cos-sim capture + clustering →
+per-layer budgets; its window-view S4 application is deferred,
+`compose_deferred_views`), kvpress-ascend owns the token dimension and the
+views (scoring + compression consuming the budgets as per-layer keep counts,
+`compose_budget_used`). The 2D budget decides HOW MANY tokens each layer
+keeps; kvpress block scoring decides WHICH tokens.
 
 ## Offline verification (no NPU needed)
 

@@ -471,6 +471,22 @@ execute_model_pre（快照 before 状态：num_computed/num_scheduled/num_prompt
   **绝不允许同时改写**（会让位包只观测）。
 - 用户"export 了两个但只有一个生效"不是 bug：默认先装者生效；要换主策略用 policy env 或只 export 一个。
 
+**组合模式 compose（三期新增，本项目"多机制同时兼容"的答案）**：两包**同时安装、分工协作**，
+而不是二选一。`KVPRESS_ASCEND_POLICY=compose` + `SQUEEZE_ASCEND_POLICY=compose` + 两个 gate 都 export：
+
+| 职责 | 包 |
+|---|---|
+| 层维度：cos-sim 捕获 + KMeans 聚类 → 每层 KV 预算（`WindowLayout.window`） | squeeze-ascend（其 S4 窗口视图**让位**，计数 `compose_deferred_views`） |
+| token 维度 + 视图：打分压缩（`n_kept = squeeze 预算`，计数 `compose_budget_used`）、S4 视图行 | kvpress-ascend |
+
+即 squeeze 决定**每层保留多少 token**，kvpress 决定**保留哪些 token**。实现要点：
+- 跨包通信走 **runner 属性桥**（`runner._squeeze_ascend_rs.req[rid].layouts[layer].window`），
+  运行期读取，无启动期 import 竞态；检测纯 env（两个 policy 都 == compose），不碰模块状态；
+- 包装嵌套顺序决定 pass 先后：晚装的包最外层、其 pass 最后跑。真机（kvpress 先装、最内层）下
+  kvpress 的完成压缩会晚一步看到预算 → 完成延迟一拍（`compose_wait_budget`，上限 2 次）由
+  G20 补检兜底；测试里反转安装序（kvpress 外层）则同一步生效——两种顺序都有测试覆盖；
+- 少 export 一个 gate/一个 compose policy 即自动回退独占模式。
+
 ## 6. 如实汇报（职业底线）
 
 交付时必须在 README/总结里写清：

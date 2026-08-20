@@ -31,7 +31,7 @@ installed; see *Coexistence* below.
 With `KVPRESS_ASCEND_STEP_LOG=1` (default) every inference step prints:
 
 ```
-[kvpress-ascend] INFO step=123 reqs=4 seams=4/4 hit=56 FAIL=- core=snapkv ratio=0.500 window=64 sink=4 mode=mean prefill=2 decode=2 viewed=4 compressed=3 mid=2 reanchor=1
+[kvpress-ascend] INFO step=123 reqs=4 seams=4/4 hit=56 FAIL=- core=snapkv ratio=0.500 window=64 sink=4 mode=mean cap=app:1000 skip:0 fb:0 comp:120 prefill=2 decode=2 viewed=4 compressed=3 mid=2 reanchor=1
 ```
 
 `seams=4/4 FAIL=-` proves all four hooks are installed; `hit=...` counts actual
@@ -77,7 +77,8 @@ smallest shared unit (all KV heads share a physical block).
 | `KVPRESS_ASCEND_DECODE_REANCHOR_WINDOW` | 8192 | max new tokens between decode re-anchors |
 | `KVPRESS_ASCEND_STEP_LOG` | 1 | per-step heartbeat |
 | `KVPRESS_ASCEND_DRY_RUN` | 0 | score + log only, never apply views |
-| `KVPRESS_ASCEND_POLICY` | auto | auto \| primary \| defer (vs squeeze-ascend) |
+| `KVPRESS_ASCEND_POLICY` | auto | auto \| primary \| defer \| **compose** (vs squeeze-ascend; compose = 两包组合模式) |
+| `KVPRESS_ASCEND_PRESS_FALLBACK` | streaming | snapkv 捕获窗口缺失时降级打分: streaming \| none |
 | `KVPRESS_ASCEND_LOG` | info | debug \| info \| warning |
 
 ## Mechanism (how kvpress is expressed on the block cache)
@@ -119,16 +120,40 @@ fail-soft: an error logs and the step continues unoptimized.
 
 ## Coexistence with SqueezeAttention-ascend
 
-Both adapters rewrite the same seams. With both gates on, ownership is decided
-deterministically at interpreter startup by which `.pth` file runs first
-(site-packages processes `.pth` files in name order, so
-`kvpress_ascend.pth` < `squeeze_ascend.pth` → **kvpress owns the seams by
-default** and squeeze logs `DEFERRED: owner=kvpress installed first`). The
-winner sets the shared `KV_ASCEND_OWNER` marker; the loser only observes.
+Two modes:
 
-To let SqueezeAttention own the seams: `export KVPRESS_ASCEND_POLICY=defer`
-(or `SQUEEZE_ASCEND_POLICY=primary`), or simply don't `export kvpress`.
-Explicit policies always override ownership.
+**1. Exclusive (default)** — only one adapter rewrites the seams. Ownership is
+decided deterministically at interpreter startup by `.pth` name order
+(`kvpress_ascend.pth` < `squeeze_ascend.pth` → **kvpress owns by default**,
+squeeze logs `DEFERRED: owner=kvpress installed first` and only observes). The
+winner sets the shared `KV_ASCEND_OWNER` marker. Force the other way with
+`KVPRESS_ASCEND_POLICY=defer` / `SQUEEZE_ASCEND_POLICY=primary`, or simply
+don't export one of the gates.
+
+**2. Compose (multi-mechanism, the project's goal)** — BOTH adapters work
+together on the same request:
+
+```bash
+export kvpress=1
+export squeeze=1
+export KVPRESS_ASCEND_POLICY=compose
+export SQUEEZE_ASCEND_POLICY=compose
+```
+
+Division of labor (compose mode):
+* **squeeze-ascend** owns the layer-dimension: S6 cos-sim capture + KMeans
+  clustering → per-layer KV budgets (`WindowLayout.window` per request/layer);
+  its window-view S4 application is **deferred** (counter `compose_deferred_views`).
+* **kvpress-ascend** owns the token-dimension + views: S1 scoring capture (or
+  positional fallback), S5 compression pass consuming squeeze's per-layer
+  budgets (`n_kept = budget`, counter `compose_budget_used`), S4 view rows.
+
+So the 2D SqueezeAttention budget decides **how many tokens each layer keeps**
+and kvpress's block scoring decides **which tokens** — both mechanisms active
+in one pipeline. If squeeze's budgets are not ready in the same step (wrapper
+nesting order), kvpress defers completion once (`compose_wait_budget`, bounded)
+and the one-step-late complement retriggers it. Removing one gate/one policy
+falls back to the exclusive mode transparently.
 
 ## Offline verification (no NPU needed)
 

@@ -26,7 +26,7 @@ pip install ./SqueezeAttention-ascend
 # 启用 kvpress 压缩
 export kvpress=1
 
-# 或启用 SqueezeAttention 压缩（二选一，详见“双包共存”）
+# 或启用 SqueezeAttention 压缩（独占模式二选一；组合模式见“双包共存”）
 # export squeeze=1
 
 vllm serve /softwarePlatform/c00879303/Qwen3.5-27B-w8a8-mtp \
@@ -54,13 +54,20 @@ vllm serve /softwarePlatform/c00879303/Qwen3.5-27B-w8a8-mtp \
 > 开关别名：`export kvpress=1` / `kvpress_ascend=1` / `KVPRESS_ASCEND=1`；
 > `export squeeze=1` / `squeeze_ascend=1` / `SQUEEZE_ASCEND=1`（大小写均可，任意非 0 值即启用）。
 
-### 双包共存（不要同时 export 两个）
+### 双包共存（两种模式）
 
-两个包改写同一批 seam。同开时由解释器启动顺序决定归属（`.pth` 按名字排序，`kvpress_ascend.pth` 在前 → **默认 kvpress 生效**，squeeze 打印 `DEFERRED: owner=kvpress installed first`，只观测不改写）。要让 squeeze 生效：
+**模式 1：独占（默认）**——同一时间只允许一个包改写 seam（防双写）。由 `.pth` 名字序决定归属（`kvpress_ascend.pth` 在前 → 默认 kvpress 生效，squeeze 打印 `DEFERRED` 只观测）。要让 squeeze 生效：`export SQUEEZE_ASCEND_POLICY=primary`（或 `KVPRESS_ASCEND_POLICY=defer`）。
+
+**模式 2：组合 compose（本项目目标：多机制同时兼容）**——两个包一起工作：
 
 ```bash
-export SQUEEZE_ASCEND_POLICY=primary   # 或 KVPRESS_ASCEND_POLICY=defer，或不 export kvpress
+export kvpress=1
+export squeeze=1
+export KVPRESS_ASCEND_POLICY=compose
+export SQUEEZE_ASCEND_POLICY=compose
 ```
+
+分工：**squeeze 管层维度**（cos-sim 捕获 + KMeans 聚类 → 每层 KV 预算，其窗口视图应用让位）；**kvpress 管 token 维度 + 视图**（打分压缩，`n_kept = squeeze 预算`，计数器 `compose_budget_used`）。即 squeeze 决定**每层保留多少 token**，kvpress 决定**保留哪些 token**——两个机制同时生效于同一条流水线。少 export 一个开关即自动回退独占模式。
 
 ### 每次推理的验证日志（心跳）
 

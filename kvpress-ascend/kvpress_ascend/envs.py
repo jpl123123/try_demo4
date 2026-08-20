@@ -99,6 +99,7 @@ class Config:
     force_keep_window: bool = True           # SnapKV: never drop the observation window
     force_keep_sink: bool = True             # StreamingLLM: never drop sink tokens
     per_layer_ratios: Optional[list] = None  # per-layer compression ratios (per_layer)
+    press_fallback: str = "streaming"        # snapkv 无捕获窗口时降级: streaming | none
     layers: Optional[tuple[int, int]] = None  # inclusive layer range, None = all
     # ---- trigger -------------------------------------------------------
     mid_prefill: bool = True                 # compress mid-prefill at budget anchors
@@ -113,7 +114,12 @@ class Config:
     # ---- strategy --------------------------------------------------------
     policy: str = "auto"                     # auto | primary | defer (vs squeeze-ascend)
     # ---- internals (mostly for tests) ------------------------------------
-    block_size_override: Optional[int] = None  # tests only
+    block_size_override: Optional[int] = None
+
+    def is_compose(self) -> bool:
+        """Compose mode: kvpress + squeeze-ascend run together (squeeze owns
+        per-layer budgets, kvpress owns scoring/views)."""
+        return self.policy == "compose"  # tests only
 
 
 def load_config() -> Config:
@@ -132,6 +138,9 @@ def load_config() -> Config:
         per_layer_ratios=_json_list(
             "KVPRESS_ASCEND_PER_LAYER_RATIOS", "kvpress_per_layer_ratios", default=None
         ),
+        press_fallback=_str(
+            "KVPRESS_ASCEND_PRESS_FALLBACK", "kvpress_press_fallback", default="streaming"
+        ).lower(),
         layers=_layer_range(_getenv("KVPRESS_ASCEND_LAYERS", "kvpress_layers")),
         mid_prefill=_bool("KVPRESS_ASCEND_MID_PREFILL", "kvpress_mid_prefill", default=True),
         mid_prefill_budget=max(
@@ -189,6 +198,7 @@ ENV_DOC = [
     _EnvDoc("KVPRESS_ASCEND_DECODE_REANCHOR_WINDOW", "8192", "Max new tokens between decode re-anchors."),
     _EnvDoc("KVPRESS_ASCEND_STEP_LOG", "1", "Per-step heartbeat line."),
     _EnvDoc("KVPRESS_ASCEND_DRY_RUN", "0", "Score and log only; never apply views."),
-    _EnvDoc("KVPRESS_ASCEND_POLICY", "auto", "auto | primary | defer (vs squeeze-ascend)."),
+    _EnvDoc("KVPRESS_ASCEND_POLICY", "auto", "auto | primary | defer | compose (vs squeeze-ascend; compose = 两包同开组合模式)."),
+    _EnvDoc("KVPRESS_ASCEND_PRESS_FALLBACK", "streaming", "snapkv 捕获窗口缺失时降级打分: streaming | none."),
     _EnvDoc("KVPRESS_ASCEND_LOG", "info", "debug | info | warning"),
 ]

@@ -124,8 +124,13 @@ def heartbeat(step: int | None = None) -> None:
         )
     )
     per_req = (
-        "prefill=%d decode=%d viewed=%d compressed=%d mid=%d reanchor=%d"
+        "cap=app:%d skip:%d fb:%d comp:%d prefill=%d decode=%d viewed=%d "
+        "compressed=%d mid=%d reanchor=%d"
         % (
+            counters.get("cap_appended", 0),
+            sum(v for k, v in counters.items() if k.startswith("cap_") and k != "cap_appended"),
+            counters.get("fallback_streaming", 0),
+            counters.get("compose_budget_used", 0),
             counters.get("steps_prefill", 0),
             counters.get("steps_decode", 0),
             counters.get("reqs_viewed", 0),

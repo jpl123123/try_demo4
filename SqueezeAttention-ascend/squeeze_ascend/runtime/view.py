@@ -127,8 +127,29 @@ def _sync_plain_row(buf, i: int, row: np.ndarray, valid: int, marker: RowMarker)
         marker.recent_last = valid
 
 
+def _compose_defers_views() -> bool:
+    """Compose mode: kvpress-ascend owns S4 view application; squeeze only
+    computes budgets (its clustering pass) and skips window-view rewriting.
+
+    Detection is env-only (both policies declare compose) - no cross-package
+    import or module state, so it stays race-free at .pth startup and inside
+    tests."""
+    try:
+        import os
+
+        return (
+            os.environ.get("SQUEEZE_ASCEND_POLICY", "").lower() == "compose"
+            and os.environ.get("KVPRESS_ASCEND_POLICY", "").lower() == "compose"
+        )
+    except Exception:
+        return False
+
+
 def apply_views(runner, attn_metadata, spec_decode_common, rs) -> None:
     if rs.cfg is None or not rs.target_layers:
+        return
+    if _compose_defers_views():
+        registry.bump("compose_deferred_views")
         return
     if isinstance(attn_metadata, (list, tuple)):
         registry.bump("skipped_ubatch")

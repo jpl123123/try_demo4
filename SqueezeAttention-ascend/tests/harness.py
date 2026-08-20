@@ -263,13 +263,17 @@ def install_wrappers():
         FakeRunner.execute_model._squeeze_ascend_patched = True  # type: ignore[attr-defined]
 
 
-def make_runner(cfg_env=None, factors=None, bs=BLOCK_SIZE):
+def make_runner(cfg_env=None, factors=None, bs=BLOCK_SIZE, runner_cls=None):
     from squeeze_ascend.envs import reset_config
     from squeeze_ascend import registry
 
     for k in list(os.environ):
         low = k.lower()
-        if low in ("squeeze", "squeeze_ascend") or low.startswith("squeeze_ascend_"):
+        if (
+            low in ("squeeze", "squeeze_ascend", "kvpress", "kvpress_ascend")
+            or low.startswith("squeeze_ascend_")
+            or low.startswith("kvpress_ascend_")
+        ):
             os.environ.pop(k, None)
     if cfg_env:
         for k, v in cfg_env.items():
@@ -279,7 +283,8 @@ def make_runner(cfg_env=None, factors=None, bs=BLOCK_SIZE):
     factors = factors or [0.9, 0.9, 0.1, 0.1]
     layer_names = ["model.layers.%d.self_attn.attn" % i for i in range(len(factors))]
     table = FakeBlockTable(bs=bs, max_reqs=8, max_blocks=64, max_tokens=4096)
-    runner = FakeRunner(layer_names, table, factors, bs=bs)
+    cls = runner_cls or FakeRunner
+    runner = cls(layer_names, table, factors, bs=bs)
     install_wrappers()
     from squeeze_ascend.runtime.context import ensure_runner_state
 
